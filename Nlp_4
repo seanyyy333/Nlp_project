@@ -1,0 +1,202 @@
+# !pip install pyglet pymunk # Example libraries for simple 2D game dev in Python
+
+import pyglet
+from pyglet.gl import *
+import pymunk
+from pymunk import Vec2
+import math
+import random
+
+# --- 1. Modular Architecture: Base Component System ---
+class GameObject:
+    """Base class for any object in the game world."""
+    def __init__(self, x=0, y=0, rotation=0):
+        self.position = Vec2(x, y)
+        self.rotation = rotation # in degrees
+        self.components = [] # List to hold various components (e.g., RenderComponent, PhysicsComponent)
+
+    def add_component(self, component):
+        self.components.append(component)
+        component.game_object = self # Link back to the game object
+
+    def update(self, dt):
+        for component in self.components:
+            component.update(dt)
+
+    def draw(self):
+        for component in self.components:
+            if hasattr(component, 'draw'):
+                component.draw()
+
+class Component:
+    """Base class for all components."""
+    def __init__(self):
+        self.game_object = None
+
+    def update(self, dt):
+        pass
+
+# --- Physics Simulation Component (using PyMunk) ---
+class PhysicsComponent(Component):
+    def __init__(self, space, mass=10, radius=10):
+        super().__init__()
+        self.space = space
+        self.mass = mass
+        self.radius = radius
+        self.body = pymunk.Body(mass, pymunk.moment_for_circle(mass, 0, radius))
+        self.shape = pymunk.Circle(self.body, radius)
+        self.shape.friction = 0.8
+        self.space.add(self.body, self.shape)
+
+    def update(self, dt):
+        # Update game object position based on physics body
+        if self.game_object:
+            self.game_object.position = self.body.position
+            self.game_object.rotation = math.degrees(self.body.angle) # PyMunk uses radians
+
+    def set_position(self, x, y):
+        self.body.position = Vec2(x, y)
+        self.game_object.position = Vec2(x, y) # Ensure game_object is also updated
+
+# --- Rendering Component (using Pyglet) ---
+class RenderComponent(Component):
+    def __init__(self, image_path, scale=1):
+        super().__init__()
+        self.image = pyglet.image.load(image_path)
+        self.image.anchor_x = self.image.width // 2
+        self.image.anchor_y = self.image.height // 2
+        self.scale = scale
+
+    def draw(self):
+        if self.game_object:
+            glPushMatrix()
+            glTranslatef(self.game_object.position.x, self.game_object.position.y, 0)
+            glRotatef(self.game_object.rotation, 0, 0, 1)
+            glScalef(self.scale, self.scale, 1)
+            self.image.blit(0, 0) # Blit at 0,0 since translation handles position
+            glPopMatrix()
+
+# --- AI for NPC Behavior ---
+class AIComponent(Component):
+    def __init__(self, target_game_object=None, speed=50):
+        super().__init__()
+        self.target = target_game_object
+        self.speed = speed
+
+    def update(self, dt):
+        if self.game_object and self.target:
+            direction = self.target.position - self.game_object.position
+            if direction.length > 10: # Only move if not too close
+                direction = direction.normalized()
+                self.game_object.position += direction * self.speed * dt
+                # Update physics body if present
+                if self.game_object.get_component(PhysicsComponent):
+                    self.game_object.get_component(PhysicsComponent).set_position(
+                        self.game_object.position.x, self.game_object.position.y
+                    )
+            # Simple decision: if too close, stand still or do something else
+            else:
+                pass # e.g., trigger an attack animation, say something
+
+    # Helper to get components
+    def get_component(self, component_type):
+        for component in self.components:
+            if isinstance(component, component_type):
+                return component
+        return None
+GameObject.get_component = lambda self, component_type: next((c for c in self.components if isinstance(c, component_type)), None)
+
+
+# --- Game Engine Core ---
+class GameEngine:
+    def __init__(self, width=800, height=600, title="Advanced Game Engine"):
+        self.width = width
+        self.height = height
+        self.window = pyglet.window.Window(width, height, caption=title)
+        self.batch = pyglet.graphics.Batch() # For efficient rendering
+        
+        self.space = pymunk.Space() # Physics space
+        self.space.gravity = (0, -900) # Example gravity
+        
+        self.game_objects = []
+
+        self.window.push_handlers(self.on_draw, self.on_key_press)
+        pyglet.clock.schedule_interval(self.update, 1/60.0) # 60 FPS update
+
+        print("Game Engine initialized.")
+
+    def add_game_object(self, obj):
+        self.game_objects.append(obj)
+
+    def update(self, dt):
+        self.space.step(dt) # Update physics simulation
+        for obj in self.game_objects:
+            obj.update(dt) # Update game object logic (AI, etc.)
+
+    def on_draw(self):
+        self.window.clear()
+        for obj in self.game_objects:
+            obj.draw() # Draw each object
+
+    def on_key_press(self, symbol, modifiers):
+        # Example: Control a player object
+        player = next((obj for obj in self.game_objects if hasattr(obj, 'is_player')), None)
+        if player and player.get_component(PhysicsComponent):
+            body = player.get_component(PhysicsComponent).body
+            if symbol == pyglet.window.key.LEFT:
+                body.velocity = Vec2(-200, body.velocity.y)
+            elif symbol == pyglet.window.key.RIGHT:
+                body.velocity = Vec2(200, body.velocity.y)
+            elif symbol == pyglet.window.key.UP:
+                if body.is_resting: # Simple jump
+                    body.apply_impulse_at_local_point((0, 50000))
+
+    def run(self):
+        pyglet.app.run()
+        print("Game Engine stopped.")
+
+# --- Example Usage: Creating a Simple Game ---
+if __name__ == '__main__':
+    # Create dummy images (requires Pillow: pip install Pillow)
+    from PIL import Image
+    # Player image
+    img = Image.new('RGB', (32, 32), color = 'red')
+    img.save('player.png')
+    # Enemy image
+    img = Image.new('RGB', (32, 32), color = 'blue')
+    img.save('enemy.png')
+    # Ground image
+    img = Image.new('RGB', (600, 20), color = 'gray')
+    img.save('ground.png')
+
+    engine = GameEngine()
+
+    # Create a player object
+    player = GameObject(x=100, y=300)
+    player.is_player = True # Custom tag for player
+    player.add_component(PhysicsComponent(engine.space, mass=50, radius=16))
+    player.add_component(RenderComponent('player.png'))
+    engine.add_game_object(player)
+
+    # Create an enemy object
+    enemy = GameObject(x=600, y=300)
+    enemy_physics = PhysicsComponent(engine.space, mass=50, radius=16)
+    enemy.add_component(enemy_physics)
+    enemy.add_component(RenderComponent('enemy.png'))
+    enemy.add_component(AIComponent(target_game_object=player, speed=100)) # AI targets player
+    engine.add_game_object(enemy)
+
+    # Create ground
+    ground_body = pymunk.Body(body_type=pymunk.Body.STATIC)
+    ground_shape = pymunk.Segment(ground_body, (-300, 100), (engine.width + 300, 100), 5) # Long segment
+    ground_shape.friction = 1.0
+    engine.space.add(ground_body, ground_shape)
+
+    # Add a visual representation for the ground
+    ground_visual = GameObject(x=engine.width // 2, y=100)
+    ground_visual.add_component(RenderComponent('ground.png', scale=1.5))
+    engine.add_game_object(ground_visual)
+
+
+    print("Running game engine. Use LEFT/RIGHT arrows to move, UP to jump.")
+    engine.run()
