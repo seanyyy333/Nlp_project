@@ -1,0 +1,222 @@
+# !pip install pandas scikit-learn matplotlib seaborn dash # For data handling, ML, visualization
+
+import pandas as pd
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import mean_squared_error, r2_score, classification_report
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+import joblib # For saving/loading models
+
+# --- 1. Data Ingestion (Simulated) ---
+def load_historical_data(filepath="simulated_data.csv"):
+    """Simulates loading data from a file."""
+    # In a real scenario, this would connect to databases, APIs, etc.
+    try:
+        data = pd.read_csv(filepath)
+        print(f"Loaded {len(data)} rows of data.")
+        return data
+    except FileNotFoundError:
+        print("Simulated data file not found. Creating dummy data.")
+        # Create dummy data for demonstration
+        data = pd.DataFrame({
+            'feature_num_1': np.random.rand(100) * 100,
+            'feature_num_2': np.random.rand(100) * 50,
+            'feature_cat_1': np.random.choice(['A', 'B', 'C'], 100),
+            'target_numeric': np.random.rand(100) * 200 + 50,
+            'target_binary': np.random.randint(0, 2, 100)
+        })
+        data.to_csv(filepath, index=False)
+        print(f"Created and loaded {len(data)} rows of dummy data.")
+        return data
+
+# --- 2. Data Preprocessing & Feature Engineering ---
+def preprocess_data(df, numerical_features, categorical_features, target_column, task_type='regression'):
+    """
+    Sets up a preprocessing pipeline for numerical and categorical features.
+    """
+    # Create preprocessing pipelines for numerical and categorical features
+    numerical_transformer = StandardScaler()
+    categorical_transformer = OneHotEncoder(handle_unknown='ignore')
+
+    # Create a preprocessor using ColumnTransformer
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', numerical_transformer, numerical_features),
+            ('cat', categorical_transformer, categorical_features)
+        ])
+
+    # Separate features and target
+    X = df[numerical_features + categorical_features]
+    y = df[target_column]
+
+    print("Data preprocessing pipeline created.")
+    return preprocessor, X, y
+
+# --- 3. Machine Learning Model Training ---
+def train_model(X_processed, y, model_type='regression', model_name='LinearRegression'):
+    """
+    Trains a machine learning model based on task type.
+    """
+    print(f"Training {model_name} model for {model_type} task...")
+    if model_type == 'regression':
+        if model_name == 'LinearRegression':
+            model = LinearRegression()
+        elif model_name == 'RandomForestRegressor':
+            model = RandomForestRegressor(random_state=42)
+        else:
+            raise ValueError("Unsupported regression model.")
+    elif model_type == 'classification':
+        if model_name == 'LogisticRegression':
+            model = LogisticRegression(random_state=42, max_iter=1000)
+        elif model_name == 'RandomForestClassifier':
+            model = RandomForestClassifier(random_state=42)
+        else:
+            raise ValueError("Unsupported classification model.")
+    else:
+        raise ValueError("Unsupported task type. Use 'regression' or 'classification'.")
+
+    # Train model
+    model.fit(X_processed, y)
+    print("Model training complete.")
+    return model
+
+# --- 4. Model Evaluation ---
+def evaluate_model(model, X_test_processed, y_test, task_type='regression'):
+    """
+    Evaluates the trained model.
+    """
+    predictions = model.predict(X_test_processed)
+    print("\n--- Model Evaluation ---")
+    if task_type == 'regression':
+        mse = mean_squared_error(y_test, predictions)
+        r2 = r2_score(y_test, predictions)
+        print(f"Mean Squared Error: {mse:.2f}")
+        print(f"R-squared: {r2:.2f}")
+        return {'mse': mse, 'r2': r2}
+    elif task_type == 'classification':
+        print(classification_report(y_test, predictions))
+        return classification_report(y_test, predictions, output_dict=True)
+
+# --- 5. Data Visualization (Basic Example) ---
+def visualize_predictions(y_test, predictions, title="Actual vs. Predicted"):
+    """
+    Creates a simple scatter plot of actual vs. predicted values for regression.
+    """
+    plt.figure(figsize=(10, 6))
+    sns.scatterplot(x=y_test, y=predictions, alpha=0.7)
+    plt.plot([min(y_test), max(y_test)], [min(y_test), max(y_test)], color='red', linestyle='--', label='Perfect Prediction')
+    plt.title(title)
+    plt.xlabel("Actual Values")
+    plt.ylabel("Predicted Values")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+    print("Generated actual vs. predicted plot.")
+
+# --- 6. Model Deployment (Conceptual - Saving/Loading Model) ---
+def save_model(model, preprocessor, filename="predictive_model.pkl"):
+    """Saves the trained model and preprocessor."""
+    joblib.dump({'model': model, 'preprocessor': preprocessor}, filename)
+    print(f"Model and preprocessor saved to {filename}")
+
+def load_model(filename="predictive_model.pkl"):
+    """Loads a saved model and preprocessor."""
+    data = joblib.load(filename)
+    print(f"Model and preprocessor loaded from {filename}")
+    return data['model'], data['preprocessor']
+
+def make_prediction_api(new_data, model, preprocessor, numerical_features, categorical_features):
+    """
+    Simulates an API endpoint for making new predictions.
+    `new_data` should be a dictionary or list of dictionaries.
+    """
+    if not isinstance(new_data, pd.DataFrame):
+        new_data_df = pd.DataFrame(new_data)
+
+    # Apply the same preprocessing steps
+    # For a live API, the preprocessor would be trained once and then used for new data
+    # We need to ensure the columns are in the correct order for the preprocessor
+    # Create a dummy dataframe with all expected columns to ensure consistent transformation
+    dummy_df = pd.DataFrame(columns=numerical_features + categorical_features)
+    processed_new_data = preprocessor.transform(pd.concat([dummy_df, new_data_df], ignore_index=True).drop(columns=dummy_df.columns, axis=1, errors='ignore'))
+    
+    prediction = model.predict(processed_new_data)
+    return prediction
+
+# --- Main Predictive Analytics Workflow ---
+if __name__ == '__main__':
+    # 1. Load Data
+    data = load_historical_data()
+
+    # Define features and target based on dummy data
+    numerical_features = ['feature_num_1', 'feature_num_2']
+    categorical_features = ['feature_cat_1']
+    target_regression = 'target_numeric'
+    target_classification = 'target_binary'
+
+    # Choose task type: 'regression' or 'classification'
+    TASK = 'regression' # Change to 'classification' to test that workflow
+    TARGET_COL = target_regression if TASK == 'regression' else target_classification
+    MODEL_NAME = 'RandomForestRegressor' if TASK == 'regression' else 'RandomForestClassifier'
+
+    # 2. Preprocess Data
+    preprocessor, X, y = preprocess_data(data, numerical_features, categorical_features, TARGET_COL, TASK)
+
+    # Split data into training and testing sets
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # Apply preprocessing to training and test data
+    X_train_processed = preprocessor.fit_transform(X_train)
+    X_test_processed = preprocessor.transform(X_test)
+    
+    # Get feature names after one-hot encoding for better interpretability (optional)
+    try:
+        feature_names = numerical_features + list(preprocessor.named_transformers_['cat'].get_feature_names_out(categorical_features))
+        print(f"Features after preprocessing: {feature_names}")
+    except Exception: # get_feature_names_out might not be available in older sklearn
+        print("Features after preprocessing are transformed.")
+
+    # 3. Train Model
+    model = train_model(X_train_processed, y_train, TASK, MODEL_NAME)
+
+    # 4. Evaluate Model
+    metrics = evaluate_model(model, X_test_processed, y_test, TASK)
+
+    if TASK == 'regression':
+        visualize_predictions(y_test, model.predict(X_test_processed), title=f"{MODEL_NAME} - Actual vs. Predicted")
+    
+    # 5. Save and Load Model (for deployment)
+    save_model(model, preprocessor, filename=f"{TASK}_{MODEL_NAME}_model.pkl")
+    loaded_model, loaded_preprocessor = load_model(filename=f"{TASK}_{MODEL_NAME}_model.pkl")
+
+    # 6. Make a New Prediction (simulating API call)
+    print("\n--- Simulating New Prediction ---")
+    new_sample_data = [{
+        'feature_num_1': 75.0,
+        'feature_num_2': 25.0,
+        'feature_cat_1': 'A'
+    },
+    {
+        'feature_num_1': 10.0,
+        'feature_num_2': 40.0,
+        'feature_cat_1': 'B'
+    }]
+    
+    prediction_result = make_prediction_api(new_sample_data, loaded_model, loaded_preprocessor, numerical_features, categorical_features)
+    print(f"Prediction for new sample: {prediction_result}")
+
+    # You could integrate this with a web framework (Flask/FastAPI) to expose as a real API
+    # from flask import Flask, request, jsonify
+    # app = Flask(__name__)
+    # @app.route('/predict', methods=['POST'])
+    # def predict():
+    #     data = request.json
+    #     prediction = make_prediction_api(data, loaded_model, loaded_preprocessor, numerical_features, categorical_features)
+    #     return jsonify({'prediction': prediction.tolist()})
+    # if __name__ == '__main__': app.run(debug=True)
