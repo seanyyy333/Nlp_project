@@ -1,0 +1,219 @@
+# !pip install Flask Flask-SocketIO eventlet
+
+from flask import Flask, render_template, request
+from flask_socketio import SocketIO, emit, join_room, leave_room
+import json
+import time
+
+app = Flask(__name__)
+# For production, use a proper secret key and a message queue like Redis
+app.config['SECRET_KEY'] = 'your_super_secret_key'
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+
+# --- Data Structures for Collaboration ---
+# { 'room_id': { 'code': 'current_code_string', 'version_history': [], 'chat_messages': [] } }
+rooms = {}
+
+# --- Helper for Version Control ---
+def record_version(room_id, new_code, user_id="system"):
+    timestamp = time.time()
+    if room_id not in rooms:
+        rooms[room_id] = {'code': '', 'version_history': [], 'chat_messages': []}
+    rooms[room_id]['version_history'].append({
+        'timestamp': timestamp,
+        'user_id': user_id,
+        'code': new_code
+    })
+    rooms[room_id]['code'] = new_code
+    print(f"Room {room_id}: Version recorded by {user_id} at {timestamp}")
+
+# --- Socket.IO Event Handlers ---
+
+@socketio.on('connect')
+def test_connect():
+    print('Client connected')
+    emit('my response', {'data': 'Connected'})
+
+@socketio.on('join')
+def on_join(data):
+    room = data['room']
+    user_id = data.get('user_id', 'anonymous')
+    join_room(room)
+    if room not in rooms:
+        rooms[room] = {'code': '', 'version_history': [], 'chat_messages': []}
+        record_version(room, '', 'initial') # Initial empty version
+    emit('load_code', {'code': rooms[room]['code'], 'chat': rooms[room]['chat_messages']}, room=request.sid)
+    emit('status_message', {'msg': f'{user_id} has joined the room.'}, room=room, include_sid=False)
+    print(f"{user_id} joined room {room}")
+
+@socketio.on('code_change')
+def handle_code_change(data):
+    room = data['room']
+    new_code = data['code']
+    user_id = data.get('user_id', 'anonymous')
+    
+    if room in rooms:
+        # Update current code and record version
+        record_version(room, new_code, user_id)
+        # Broadcast the change to all other clients in the room
+        emit('code_update', {'code': new_code, 'user_id': user_id}, room=room, include_sid=False)
+    print(f"Room {room}: Code updated by {user_id}")
+
+@socketio.on('chat_message')
+def handle_chat_message(data):
+    room = data['room']
+    message = data['message']
+    user_id = data.get('user_id', 'anonymous')
+    
+    if room in rooms:
+        chat_entry = {'user_id': user_id, 'message': message, 'timestamp': time.time()}
+        rooms[room]['chat_messages'].append(chat_entry)
+        # Broadcast the message to all clients in the room
+        emit('new_chat_message', chat_entry, room=room)
+    print(f"Room {room}: Chat message from {user_id}: {message}")
+
+@socketio.on('get_version_history')
+def get_version_history(data):
+    room = data['room']
+    if room in rooms:
+        emit('version_history', {'history': rooms[room]['version_history']}, room=request.sid)
+
+@socketio.on('revert_to_version')
+def revert_to_version(data):
+    room = data['room']
+    index = data['index']
+    user_id = data.get('user_id', 'anonymous')
+    if room in rooms and 0 <= index < len(rooms[room]['version_history']):
+        old_version = rooms[room]['version_history'][index]['code']
+        record_version(room, old_version, user_id=f"{user_id}_revert")
+        emit('code_update', {'code': old_version, 'user_id': user_id}, room=room)
+        emit('status_message', {'msg': f'{user_id} reverted to an earlier version.'}, room=room)
+        print(f"Room {room}: {user_id} reverted code.")
+
+
+@socketio.on('disconnect')
+def test_disconnect():
+    print('Client disconnected')
+
+# --- Frontend (Conceptual HTML/JavaScript) ---
+# This would be served by Flask if using it as a full-stack framework
+"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Collaborative Code Editor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.js"></script>
+    <style>
+        body { font-family: sans-serif; display: flex; }
+        #editor-container { flex: 2; padding: 10px; }
+        #chat-container { flex: 1; padding: 10px; border-left: 1px solid #ccc; }
+        #code-editor { width: 100%; height: 500px; border: 1px solid #ddd; font-family: monospace; }
+        #chat-box { height: 400px; overflow-y: scroll; border: 1px solid #ddd; padding: 5px; margin-bottom: 10px; }
+        .chat-message { margin-bottom: 5px; }
+        .user-message { color: blue; }
+        .bot-message { color: green; }
+    </style>
+</head>
+<body>
+    <div id="editor-container">
+        <h1>Collaborative Code Editor</h1>
+        <textarea id="code-editor" onkeyup="sendCodeChange()"></textarea>
+        <button onclick="getHistory()">Get Version History</button>
+        <div id="history-display"></div>
+    </div>
+    <div id="chat-container">
+        <h2>Live Chat</h2>
+        <div id="chat-box"></div>
+        <input type="text" id="chat-input" placeholder="Type your message..." onkeyup="checkSendMessage(event)">
+        <button onclick="sendMessage()">Send</button>
+    </div>
+
+    <script>
+        const socket = io(); // Connects to the Flask-SocketIO server
+        const codeEditor = document.getElementById('code-editor');
+        const chatBox = document.getElementById('chat-box');
+        const chatInput = document.getElementById('chat-input');
+        const historyDisplay = document.getElementById('history-display');
+
+        const roomName = 'my_code_project'; // Example room
+        const userId = 'user_' + Math.floor(Math.random() * 1000); // Simple random user ID
+
+        socket.on('connect', () => {
+            console.log('Connected to server');
+            socket.emit('join', { room: roomName, user_id: userId });
+        });
+
+        socket.on('load_code', (data) => {
+            codeEditor.value = data.code;
+            data.chat.forEach(msg => appendChatMessage(msg.user_id, msg.message));
+            console.log('Code loaded:', data.code);
+        });
+
+        socket.on('code_update', (data) => {
+            if (data.user_id !== userId) { // Only update if change came from another user
+                codeEditor.value = data.code;
+                console.log('Code updated by', data.user_id);
+            }
+        });
+
+        socket.on('status_message', (data) => {
+            appendChatMessage('System', data.msg, 'bot-message');
+        });
+
+        socket.on('new_chat_message', (data) => {
+            appendChatMessage(data.user_id, data.message, data.user_id === userId ? 'user-message' : '');
+        });
+
+        socket.on('version_history', (data) => {
+            historyDisplay.innerHTML = '<h3>Version History:</h3>';
+            data.history.forEach((version, index) => {
+                const p = document.createElement('p');
+                p.textContent = `Version ${index}: by ${version.user_id} at ${new Date(version.timestamp * 1000).toLocaleString()}`;
+                const revertBtn = document.createElement('button');
+                revertBtn.textContent = 'Revert';
+                revertBtn.onclick = () => revertVersion(index);
+                p.appendChild(revertBtn);
+                historyDisplay.appendChild(p);
+            });
+        });
+
+        function sendCodeChange() {
+            socket.emit('code_change', { room: roomName, code: codeEditor.value, user_id: userId });
+        }
+
+        function sendMessage() {
+            const message = chatInput.value;
+            if (message.trim() !== '') {
+                socket.emit('chat_message', { room: roomName, message: message, user_id: userId });
+                chatInput.value = '';
+            }
+        }
+
+        function checkSendMessage(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+
+        function appendChatMessage(sender, message, className = '') {
+            const msgElement = document.createElement('div');
+            msgElement.classList.add('chat-message', className);
+            msgElement.innerHTML = `<strong>${sender}:</strong> ${message}`;
+            chatBox.appendChild(msgElement);
+            chatBox.scrollTop = chatBox.scrollHeight; // Scroll to bottom
+        }
+
+        function getHistory() {
+            socket.emit('get_version_history', { room: roomName });
+        }
+
+        function revertVersion(index) {
+            socket.emit('revert_to_version', { room: roomName, index: index, user_id: userId });
+            historyDisplay.innerHTML = ''; // Clear history display after revert
+        }
+    </script>
+</body>
+</html>
+"""
+# To run this, save the HTML part as `templates/index.html` and run the Flask app.
+# `if __name__ == '__main__': socketio.run(app, debug=True)`
